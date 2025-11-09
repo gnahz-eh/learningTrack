@@ -1,0 +1,345 @@
+# Design a URL Shortening service like TinyURL
+
+## Questions
+- `How do you generate a unique short ID?`
+- `How do you avoid collisions?`
+- How do we prevent malicious links, phishing, or spam?
+- `Do we rate-limit requests from abusive clients?`
+- `Do we support link expiration or deletion?`
+- How do we store logs for analytics?
+- `Should we cache frequently accessed short URLs? Where? (Redis, CDN)`
+- `How do we handle hot keys (very popular links)?`
+
+
+## Introduction
+A URL shortener service creates a short url/aliases/tiny url against a long url.Moreover, when user click on the tiny url, he gets redirected to original url.
+
+Tiny url are exceedingly handy to share through sms/tweets (where there is limit to number of characters that can be messaged/tweeted) and also when they are printed in books/magazines etc.(Less character implies less printing cost). In addition, it is easy and less error prone to type a short url when compared to its longer version.
+
+Example:
+- Long URL: https://medium.com/@sandeep4.verma
+- Short URL : https://tinyurl.com/3sh2ps6v
+
+## Features
+1. How long a tiny url would be ? Will it ever expire ?
+   - Assume once a url created it will remain forever in system.
+
+2. Can a customer create a tiny url of his/her choice or will it always be service generated ? If user is allowed to create customer shortened links, what would be the maximum size of custom url ?
+   - Yes user can create a tiny url of his/her choice. Assume `maximum character limit to be 16`.
+
+3. How many url shortening request expected per month ?
+   - Assume `100 million` requests per month.
+
+4. Do we expect service to provide metrics like most visited links ?
+   - Yes. Service should also aggregate metrics like number of URL redirections per day and other analytics for targeted advertisements.
+
+## Requirements
+### Functional Requirements
+- `Service should be able to create shortened url/links against a long url`
+- `Click to the short URL should redirect the user to the original long URL`
+- Shortened link should be as small as possible
+- `Users can create custom url with maximum character limit of 16`
+- Service should collect metrics like most clicked links
+- `Once a shortened link is generated it should stay in system for lifetime`
+
+### Non-Functional Requirements
+- Service should be up and running all the time
+- `URL redirection should be fast and should not degrade at any point of time (Even during peak loads)`
+- Service should expose REST API’s so that it can be integrated with third party applications
+
+## Capacity Estimation
+
+| Category           | Metric                     | Value         | Calculation                                  |
+|--------------------|----------------------------|---------------|----------------------------------------------|
+| **Traffic**        | Read/Write Ratio           | 200:1         | Assumed                                      |
+|                    | Shortened links per month  | `100 million` | Given requirement                            |
+|                    | Shortened links per second | `~40 URLs/s`  | 100M ÷ (30 days × 24 hours × 3600 seconds)   |
+|                    | Redirections per second    | `8000 URLs/s` | 40 URLs/s × 200 (read/write ratio)           |
+| **Storage**        | Service lifetime           | 100 years     | Assumed                                      |
+|                    | Shortened links per month  | 100 million   | Given requirement                            |
+|                    | Total data objects         | 120 billion   | 100M/month × 100 years × 12 months           |
+|                    | Data object size           | 500 bytes     | Short URL + Long URL + metadata              |
+|                    | Total storage required     | `60 TB`       | 120 billion × 500 bytes                      |
+| **Memory & Cache** | Cache principle            | 80:20 rule    | Pareto Principle (80% requests for 20% data) |
+|                    | Redirections per second    | 8000 URLs/s   | From traffic calculation                     |
+|                    | Requests per day           | `700 million` | 8000/s × 86400 seconds                       |
+|                    | Cache percentage           | 20%           | Based on 80:20 rule                          |
+|                    | Data object size           | `500 bytes`   | Same as storage calculation                  |
+|                    | Cache memory required      | `~70 GB`      | 0.2 × 700M × 500 bytes                       |
+
+## High Level Design
+1. Added a load balancer in front of WebServers
+2. Sharded the database to handle huge object data
+3. Added cache system to reduce load on the database.
+
+![](./resources/image.png)
+
+## Detail Design
+### API Design
+
+| Aspect                 | Details                                        |
+|------------------------|------------------------------------------------|
+| **Function Signature** | `create(long_url, api_key, custom_url)`        |
+| **HTTP Method**        | POST                                           |
+| **Endpoint**           | `https://tinyurl.com/app/api/create`           |
+| **Request Body**       | `{url=long_url}`                               |
+| **Success Response**   | OK (200), with the generated short_url in data |
+
+- Parameters
+  - `long_url`: A long URL that needs to be shortened
+  - `api_key`: A unique API key provided to each user, to protect from the spammers, access, and resource control for the user, etc.
+  - `custom_url (optional)`: The custom short link URL, user want to use
+  - `Return Value`: The short Url generated, or error code in case of the inappropriate parameter
+
+| Aspect                 | Details                              |
+|------------------------|--------------------------------------|
+| **Function Signature** | `get(short_url, api_key)`            |
+| **HTTP Method**        | GET                                  |
+| **Endpoint**           | `https://tinyurl.com/{short_url_id}` |
+
+- Parameters
+  - `short_url_id`: The short URL id generated from the above function.
+  - `Return Value`: Return a http redirect response(302)
+
+---
+
+### Database Design
+
+#### User Table
+| Field             | Description                                                       |
+|-------------------|-------------------------------------------------------------------|
+| **User ID**       | A unique user id or API key to make user globally distinguishable |
+| **Name**          | The name of the user                                              |
+| **Email**         | The email id of the user                                          |
+| **Creation Date** | The date on which the user was registered                         |
+
+#### ShortLink Table
+| Field            | Description                                                         |
+|------------------|---------------------------------------------------------------------|
+| **Short Url**    | 6/7 character long unique short URL                                 |
+| **Original Url** | The original long URL                                               |
+| **UserId**       | The unique user id or API key of the user who created the short URL |
+
+---
+
+### Shortening Algorithm
+For shortening a url we can use following two solutions (URL encoding and Key Generation service). Let’s walk through each of them one by one.
+- URL Encoding
+  - base62
+  - MD5
+- Key Generation Service (KGS)
+
+#### URL encoding through base62
+
+Base 10 are digits [0–9], which we use in everyday life and Base 62 are [0–9][a-z][A-Z]
+
+- URL with length 5, will give 62⁵ = ~916 Million URLs
+- URL with length 6, will give 62⁶ = ~56 Billion URLs
+- URL with length 7, will give 62⁷ = ~3500 Billion URLs
+
+Since we required to produce `120 billion URLs`, with `7 characters` in base62 we will get `~3500 Billion` URLs. Hence each of tiny url generated will have 7 characters
+
+How to get unique ‘7 character’ long random URLs in base62 ?
+
+Once we have decided number of characters to use in Tiny URL (7 characters) and also the base to use (base 62 [0–9][a-z][A-Z] ), then the next challenge is how to generate unique URLs which are 7 characters long.
+
+> ##### Technique 1 —Short url from random numbers
+We could just make a random choice for each character and check if this tiny url exists in DB or not. If it doesn’t exist return the tiny url else continue rolling/retrying. As more and more 7 characters short links are generated in Database, we would require several rolls before finding non-existing one short link which will slow down tiny url generation process.
+
+> ##### Technique 2 —Short url from base conversion
+Think of the seven-bit short url as a hexadecimal number (0–9, a-z, A-Z) (For e.g. aKc3K4b) . Each short url can be mapped to a decimal integer by using base conversion and vice versa.
+
+Take the number 125 as an example, to convert 125 to base-62, we distribute that 125 across these base-62 "places." The highest "place" that can take some is 62¹, which is 62. 125/62 is 2, with a remainder of 1. So we put a 2 in the 62’s place and a 1 in the 1’s place. So our answer is 21.
+
+For 7,912 we have this three-digit number: 2 - 3 - 38. Now, that "38" represents one numeral in our base-62 number. So we need to convert that 38 into a specific choice from our set of numerals: a-z, A-Z, and 0–9. "38th" numeral is "C." So we convert that 38 to a "C." That gives us 23C.
+
+So we can start with a counter (A Large number 100000000000 in base 10 which 1L9zO9O in base 62) and increment counter every-time we get request for new short url (100000000001, 100000000002, 100000000003 etc.) .This way we will always get a unique short url.
+  
+  - 100000000000 (Base 10) ==> 1L9zO9O (Base 62)
+
+Similarly, when we get tiny url link for redirection we can convert this base62 tiny url to a integer in base10
+
+  - 1L9zO9O (Base 62) ==>100000000000 (Base 10)
+
+> ##### Technique 3 —MD5 hash
+The MD5 message-digest algorithm is a widely used hash function producing a 128-bit hash value(or 32 hexadecimal digits). We can use these 32 hexadecimal digit for generating 7 characters long tiny url.
+
+- Encode the long URL using the MD5 algorithm and take only the first 7 characters to generate TinyURL.
+- The first 7 characters could be the same for different long URLs so check the DB to verify that TinyURL is not used already
+- Try next 7 characters of previous choice of 7 characters already exist in DB and continue until you find a unique value
+
+#### Key Generation Service (KGS)
+We can have a standalone Key Generation Service (KGS) that generates random seven-letter strings beforehand and stores them in a database (let’s call it key-DB). Whenever we want to shorten a URL, we will take one of the already-generated keys and use it. This approach will make things quite simple and fast. Not only are we not encoding the URL, but we won’t have to worry about duplications or collisions. KGS will make sure all the keys inserted into key-DB are unique
+
+- Can concurrency cause problems? 
+  - As soon as a key is used, it should be marked in the database to ensure that it is not used again. If there are multiple servers reading keys concurrently, we might get a scenario where two or more servers try to read the same key from the database. How can we solve this concurrency problem?
+- Servers can use KGS to read/mark keys in the database. KGS can use two tables to store keys: one for keys that are not used yet, and one for all the used keys. As soon as KGS gives keys to one of the servers, it can move them to the used keys table. KGS can always keep some keys in memory to quickly provide them whenever a server needs them.
+- For simplicity, as soon as KGS loads some keys in memory, it can move them to the used keys table. This ensures each server gets unique keys. If KGS dies before assigning all the loaded keys to some server, we will be wasting those keys–which could be acceptable, given the huge number of keys we have.
+- KGS also has to make sure not to give the same key to multiple servers. For that, it must synchronize (or get a lock on) the data structure holding the keys before removing keys from it and giving them to a server.
+- Isn’t KGS a single point of failure? 
+  - Yes, it is. To solve this, we can have a standby replica of KGS. Whenever the primary server dies, the standby server can take over to generate and provide keys.
+- Can each app server cache some keys from key-DB? 
+  - Yes, this can surely speed things up. Although, in this case, if the application server dies before consuming all the keys, we will end up losing those keys. This can be acceptable since we have 68B unique six-letter keys.
+
+---
+
+### Database Choice
+
+- Relational Databases (RDBMS)
+  - Examples: MySQL, Postgres
+  - Advantages:
+    - Efficient to check if URL exists in database
+    - Handle concurrent writes well
+    - ACID consistency
+  - Disadvantages:
+    - Difficult to scale
+
+- NoSQL Databases
+  - Examples: BigTable, Cassandra
+  - Advantages:
+    - Excellent scaling power
+    - High performance for large datasets
+  - Disadvantages:
+    - Eventually consistent (not ACID)
+    - Less suitable for complex queries
+
+---
+
+### Scaling
+#### [Technique 1: Short url from random numbers](#technique-1-short-url-from-random-numbers)
+Our system needs to handle 60TB of storage, 40 writes/second, and 8000 reads/second. So NoSQL database (MongoDB/Cassandra) is a better choice than SQL database.
+
+Why NoSQL?
+- Better for high-volume reads/writes
+- Built-in sharding and replication
+- No complex joins needed for our use case
+- Easier to scale than custom SQL partitioning
+
+MongoDB Scaling Strategy:
+- Sharding: Distribute data across multiple machines
+  - Use the generated short URL as the shard key
+  - Apply hashed sharding for even data distribution
+  - MongoDB automatically handles hash computation
+
+- Data Schema:
+  ```json
+  {
+    _id: <ObjectId102>,
+    shortUrl: "https://tinyurl.com/3sh2ps6v",
+    originalUrl: "https://medium.com/@sandeep4.verma",
+    userId: "sandeepv"
+  }
+  ```
+
+Performance Optimizations & Uniqueness:
+  - Indexing (The Key to Speed): We create a **unique index** on the `shortUrl` field. This is the most critical step for performance.
+  - Fast Uniqueness Checks: Because of the index, checking if a `shortUrl` already exists is nearly instant. The database doesn't scan millions of documents; it performs a quick lookup in the sorted index. This is how `putIfAbsent` (or an insert with a unique constraint) is efficient.
+  - Consistency: Single-document operations in MongoDB are atomic, ensuring each URL mapping is saved correctly without corruption.
+  - Scalability: We can add more shards to the database cluster as traffic grows, increasing read/write capacity.
+  - Caching: A cache layer (like Redis) is used to store frequently accessed URLs, reducing database reads for popular links.
+
+How Document Storage Works:
+1. Shard Selection: Hash function determines which shard (Server A, B, or C)
+2. Document Insertion: Each new URL becomes a NEW document in that shard
+3. No Overwriting: We don't replace existing documents - each URL mapping is its own document
+
+Example:
+```
+Shard 1 contains:
+- Document 1: {shortUrl: "abc123", originalUrl: "google.com", userId: "user1"}
+- Document 2: {shortUrl: "def456", originalUrl: "facebook.com", userId: "user2"}  
+- Document 3: {shortUrl: "ghi789", originalUrl: "twitter.com", userId: "user3"}
+- ... (millions more documents)
+
+When storing "xyz999" → "linkedin.com":
+- Hash("xyz999") → points to Shard 1
+- Creates Document N+1: {shortUrl: "xyz999", originalUrl: "linkedin.com", userId: "user4"}
+```
+
+#### [Technique 2 — Short url from base conversion](#technique-2-short-url-from-base-conversion)
+We used a counter (A large number) and then converted it into a base62 7 character tinyURL. As counters always get incremented so we can get a new value for every new request (Thus we don’t need to worry about getting same tinyURL for different long/original urls)
+
+Scaling with SQL sharding and auto increment
+
+Sharding is a scale-out approach in which database tables are partitioned, and each partition is put on a separate RDBMS server. For SQL, this means each node has its own separate SQL RDBMS managing its own separate set of data partitions. This data separation allows the application to distribute queries across multiple servers simultaneously, creating parallelism and thus increasing the scale of that workload. However, this data and server separation also creates challenges, including sharding key choice, schema design, and application rewrites. Additional challenges of sharding MySQL include data maintenance, infrastructure maintenance, and business challenges.
+
+Before an RDBMS can be sharded, several design decisions must be made. Each of these is critical to both the performance of the sharded array, as well as the flexibility of the implementation going forward. These design decisions include the following:
+
+- Sharding key must be chosen
+  - We can use sharding key as auto-incrementing counter and divide them into ranges for example from 1 to 10M, server 2 ranges from 10M to 20M, and so on.
+  - We can start the counter from 100000000000. So counter for each SQL database instance will be in range 100000000000+1 to 100000000000+10M , 100000000000+10M to 100000000000+20M and so on.
+  - We can start with 100 database instances and as and when any instance reaches maximum limit (10M), we can stop saving objects there and spin up a new server instance. In case one instance is not available/or down or when we require high throughput for write we can spawn multiple new server instances.
+- Schema changes
+  - Schema for collection tiny URL For RDBMS :
+    ```SQL
+    CREATE TABLE tinyUrl (
+        id  BIGINT                 NOT NULL,  AUTO_INCREMENT
+        shortUrl  VARCHAR(7)       NOT NULL,
+        originalUrl  VARCHAR(400)  NOT NULL,
+        userId   VARCHAR(50)       NOT NULL,
+        automatically on primary-key column
+                                              -- INDEX (shortUrl)
+                                              -- INDEX (originalUrl)
+    );
+    ```
+- Mapping between sharding key, shards (databases), and physical servers
+  - We can use a distributed service Zookeeper to solve the various challenges of a distributed system like a race condition, deadlock, or particle failure of data. Zookeeper is basically a distributed coordination service that manages a large set of hosts. It keeps track of all the things such as the naming of the servers, active database servers, dead servers, configuration information (Which server is managing which range of counters)of all the hosts. It provides coordination and maintains the synchronization between the multiple servers.
+  - From 3500 Billion URLs combinations take 1st billion combinations.
+  - In Zookeeper maintain the range and divide the 1st billion into 100 ranges of 10 million each i.e. range 1->(1–1,000,0000), range 2->(1,000,0001–2,000,0000)…. range 1000->(999,000,0001–1,000,000,0000) (Add 100000000000 to each range for counter)
+  - When servers will be added these servers will ask for the unused range from Zookeepers. Suppose the W1 server is assigned range 1, now W1 will generate the tiny URL incrementing the counter and using the encoding technique. Every time it will be a unique number so there is no possibility of collision and also there is no need to keep checking the DB to ensure that if the URL already exists or not. We can directly insert the mapping of a long URL and short URL into the DB.
+  - In the worst case, if one of the servers goes down then only that range of data is affected. We can replicate data of master to it’s slave and while we try to bring master back, we can divert read queries to it’s slaves
+  - If one of the database reaches its maximum range or limit then we can move that database instance out from active database instances which can accept write and add a new database with a new a new fresh range and add this to Zookeeper. This will only be used for reading purpose.
+  - The Addition of a new database is also easy. Zookeeper will assign an unused counter range to this new database.
+  - We will take the 2nd billion when the 1st billion is exhausted to continue the process.
+- How to check whether short URL is present in database or not ?
+  - When we get tiny url (For example 1L9zO9O) we can use base62ToBase10 function to get the counter value (100000000000). Once we have this values we can get which database this counter ranges belongs to from zookeeper(Let’s say it database instance 1). Then we can send SQL query to this server (Select * from tinyUrl where id=10000000000111).This will provide us sql row data (*if present)
+  - Bloom filter
+    - A Bloom filter is a probabilistic data structure that can quickly test whether an element is in a set. It's highly space-efficient but has a trade-off: it can produce false positives (saying an item is in the set when it's not) but never false negatives (saying an item is not in the set when it is).
+    - **How it helps:** We can use a Bloom filter to avoid querying the database for every newly generated short URL, which is especially useful when the database grows large.
+    - **Workflow:**
+      1. When a new short URL is generated, first check if it exists in the Bloom filter.
+      2. If the filter says **"no"**, the URL is guaranteed to be unique. We can safely use it and add it to the database and the Bloom filter.
+      3. If the filter says **"yes"** (a potential collision), we must then query the database to be certain.
+         - If the database confirms the URL exists, we generate a new one and repeat.
+         - If the database shows the URL does not exist (a false positive), we can use it and add it to the database and the Bloom filter.
+    - This approach significantly reduces database lookups for checking uniqueness, improving the performance of the write path.
+    - **Example:**
+      - **Setup:** Imagine a bit array of size 12 (all `0`s) and 3 hash functions.
+      - **Add "google.com":** The hash functions return indices `2`, `5`, and `9`. We set these bits to `1`.
+        - Array: `[0,0,1,0,0,1,0,0,0,1,0,0]`
+      - **Add "github.com":** The hash functions return `4`, `5`, and `10`. We set these bits to `1`.
+        - Array: `[0,0,1,0,1,1,0,0,0,1,1,0]`
+      - **Check "google.com":** Hashing gives `2`, `5`, `9`. All bits at these positions are `1`, so it's **probably in the set** (true positive).
+      - **Check "facebook.com":** Hashing gives `1`, `5`, `8`. The bit at position `1` is `0`, so it's **definitely not in the set** (true negative).
+      - **Check "twitter.com" (False Positive):** Hashing happens to give `4`, `9`, `10`. All bits are `1` (from "google.com" and "github.com"), so the filter says it's **probably in the set**, even though it was never added.
+
+#### [Technique 3 — MD5 hash](#technique-3-md5-hash)
+We can leverage the scaling Technique 1 (Using MongoDB). We can also use Cassandra in place of MongoDB. In Cassandra instead of using shard key we will use partition key to distribute our data.
+
+---
+
+### Cache
+We can cache URLs that are frequently accessed. We can use some off-the-shelf solution like Memcached, which can store full URLs with their respective hashes. Before hitting backend storage, the application servers can quickly check if the cache has the desired URL.
+
+How much cache memory should we have? We can start with 20% of daily traffic and, based on clients’ usage patterns, we can adjust how many cache servers we need. As estimated above, we need 70GB memory to cache 20% of daily traffic. Since a modern-day server can have 256GB memory, we can easily fit all the cache into one machine. Alternatively, we can use a couple of smaller servers to store all these hot URLs.
+
+Which cache eviction policy would best fit our needs? When the cache is full, and we want to replace a link with a newer/hotter URL, how would we choose? Least Recently Used (LRU) can be a reasonable policy for our system. Under this policy, we discard the least recently used URL first. We can use a Linked Hash Map or a similar data structure to store our URLs and Hashes, which will also keep track of the URLs that have been accessed recently.
+
+To further increase the efficiency, we can replicate our caching servers to distribute the load between them.
+
+How can each cache replica be updated? Whenever there is a cache miss, our servers would be hitting a backend database. Whenever this happens, we can update the cache and pass the new entry to all the cache replicas. Each replica can update its cache by adding the new entry. If a replica already has that entry, it can simply ignore it.
+
+---
+
+### Load Balancer (LB)
+We can add a Load balancing layer at three places in our system:
+- Between Clients and Application servers
+- Between Application Servers and database servers
+- Between Application Servers and Cache servers
+
+Initially, we could use a simple Round Robin approach that distributes incoming requests equally among backend servers. This LB is simple to implement and does not introduce any overhead. Another benefit of this approach is that if a server is dead, LB will take it out of the rotation and will stop sending any traffic to it.
+
+A problem with Round Robin LB is that we don’t take the server load into consideration. If a server is overloaded or slow, the LB will not stop sending new requests to that server. To handle this, a more intelligent LB solution can be placed that periodically queries the backend server about its load and adjusts traffic based on that.
+
+## Resources
+- [System Design : Scalable URL shortener service like TinyURL](https://medium.com/%40sandeep4.verma/system-design-scalable-url-shortener-service-like-tinyurl-106f30f23a82)

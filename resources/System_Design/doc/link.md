@@ -3,3 +3,8 @@
 - ### [Grokking the System Design (, educative.io)](https://www.doc88.com/p-84987071506441.html)
 - ### [北美FAANG求职——准备资料大全](https://zhuanlan.zhihu.com/p/111102388)
 - ### [编码 面试_2020年最佳编码面试准备资源](https://blog.csdn.net/weixin_26750481/article/details/108131173)
+
+## TODO
+- ### [System Design Primer](https://systemdesign.io/)
+- ### [System Design GitHub Repository](https://github.com/karanpratapsingh/system-design)
+- ### [System Design Resources](https://github.com/PawanRamaMali/System-Design/tree/main)
