@@ -139,7 +139,7 @@ Base 10 are digits [0–9], which we use in everyday life and Base 62 are [0–9
 
 Since we required to produce `120 billion URLs`, with `7 characters` in base62 we will get `~3500 Billion` URLs. Hence each of tiny url generated will have 7 characters
 
-How to get unique ‘7 character’ long random URLs in base62 ?
+How to get unique '7 character' long random URLs in base62 ?
 
 Once we have decided number of characters to use in Tiny URL (7 characters) and also the base to use (base 62 [0–9][a-z][A-Z] ), then the next challenge is how to generate unique URLs which are 7 characters long.
 
@@ -168,7 +168,12 @@ The MD5 message-digest algorithm is a widely used hash function producing a 128-
 - The first 7 characters could be the same for different long URLs so check the DB to verify that TinyURL is not used already
 - Try next 7 characters of previous choice of 7 characters already exist in DB and continue until you find a unique value
 
-#### Key Generation Service (KGS)
+Also, we could use the base64 encoding to encode the 128 bit MD5 value, will get a 21 characters (each base64 character encodes 6 bits of the hash value).
+
+`The key issus for this method is`:
+- If multiple users enter the same URL, they can get the same shortened URL, which is not acceptable. Same URL from different users, should result differently. 
+
+#### Key Generation Service
 We can have a standalone Key Generation Service (KGS) that generates random seven-letter strings beforehand and stores them in a database (let’s call it key-DB). Whenever we want to shorten a URL, we will take one of the already-generated keys and use it. This approach will make things quite simple and fast. Not only are we not encoding the URL, but we won’t have to worry about duplications or collisions. KGS will make sure all the keys inserted into key-DB are unique
 
 - Can concurrency cause problems? 
@@ -205,7 +210,7 @@ We can have a standalone Key Generation Service (KGS) that generates random seve
 
 ---
 
-### Scaling
+### Scaling (Data Partitioning and Replication)
 #### [Technique 1: Short url from random numbers](#technique-1-short-url-from-random-numbers)
 Our system needs to handle 60TB of storage, 40 writes/second, and 8000 reads/second. So NoSQL database (MongoDB/Cassandra) is a better choice than SQL database.
 
@@ -316,6 +321,17 @@ Before an RDBMS can be sharded, several design decisions must be made. Each of t
 #### [Technique 3 — MD5 hash](#technique-3-md5-hash)
 We can leverage the scaling Technique 1 (Using MongoDB). We can also use Cassandra in place of MongoDB. In Cassandra instead of using shard key we will use partition key to distribute our data.
 
+#### [Technique 4 — Key Generation Service](#key-generation-service)
+
+- Range Based Partitioning
+  - We can store URLs in separate partitions based on the first letter of the hash key. Hence we save all the URLs starting with letter 'A' (and 'a') in one partition, save those that start with letter 'B' in another partition and so on. This approach is called range-based partitioning. We can even combine certain less frequently occurring letters into one database partition. We should come up with a static partitioning scheme so that we can always store/find a URL in a predictable manner.
+  - The main problem with this approach is that it can lead to unbalanced DB servers. For example, we decide to put all URLs starting with letter 'E' into a DB partition, but later we realize that we have too many URLs that start with the letter 'E'.
+
+- Hash-Based Partitioning
+  - In this scheme, we take a hash of the object we are storing. We then calculate which partition to use based upon the hash. In our case, we can take the hash of the ‘key’ or the short link to determine the partition in which we store the data object.
+  - Our hashing function will randomly distribute URLs into different partitions (e.g., our hashing function can always map any ‘key’ to a number between [1…256]), and this number would represent the partition in which we store our object.
+  - This approach can still lead to overloaded partitions, which can be solved by using Consistent Hashing.
+
 ---
 
 ### Cache
@@ -340,6 +356,21 @@ We can add a Load balancing layer at three places in our system:
 Initially, we could use a simple Round Robin approach that distributes incoming requests equally among backend servers. This LB is simple to implement and does not introduce any overhead. Another benefit of this approach is that if a server is dead, LB will take it out of the rotation and will stop sending any traffic to it.
 
 A problem with Round Robin LB is that we don’t take the server load into consideration. If a server is overloaded or slow, the LB will not stop sending new requests to that server. To handle this, a more intelligent LB solution can be placed that periodically queries the backend server about its load and adjusts traffic based on that.
+
+---
+
+### Purging or DB cleanup
+Should entries stick around forever or should they be purged? If a userspecified expiration time is reached, what should happen to the link?
+
+If we chose to actively search for expired links to remove them, it would put a lot of pressure on our database. Instead, we can slowly remove expired links and do a lazy cleanup. Our service will make sure that only expired links will be deleted, although some expired links can live longer but will never be returned to users.
+
+- Whenever a user tries to access an expired link, we can delete the link and return an error to the user.
+- A separate Cleanup service can run periodically to remove expired links from our storage and cache. This service should be very lightweight and can be scheduled to run only when the user traffic is expected to be low. 
+- We can have a default expiration time for each link (e.g., two years). 
+- After removing an expired link, we can put the key back in the key-DB to be reused.
+
+## Architecture
+![](./resources/architecture.png)
 
 ## Resources
 - [System Design : Scalable URL shortener service like TinyURL](https://medium.com/%40sandeep4.verma/system-design-scalable-url-shortener-service-like-tinyurl-106f30f23a82)
