@@ -8,3 +8,4 @@
 - ### [System Design Primer](https://systemdesign.io/)
 - ### [System Design GitHub Repository](https://github.com/karanpratapsingh/system-design)
 - ### [System Design Resources](https://github.com/PawanRamaMali/System-Design/tree/main)
+https://www.designgurus.io/courses
