@@ -9,3 +9,4 @@
 - ### [System Design GitHub Repository](https://github.com/karanpratapsingh/system-design)
 - ### [System Design Resources](https://github.com/PawanRamaMali/System-Design/tree/main)
 https://www.designgurus.io/courses
+https://blog.algomaster.io/archive?sort=new

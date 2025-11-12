@@ -72,7 +72,7 @@ Example:
 2. Sharded the database to handle huge object data
 3. Added cache system to reduce load on the database.
 
-![](./resources/image.png)
+![](../../../../../resources/System_Design/Examples/Easy/ShortenURL/resources/image.png)
 
 ## Detail Design
 ### API Design
@@ -171,7 +171,15 @@ The MD5 message-digest algorithm is a widely used hash function producing a 128-
 Also, we could use the base64 encoding to encode the 128 bit MD5 value, will get a 21 characters (each base64 character encodes 6 bits of the hash value).
 
 `The key issus for this method is`:
-- If multiple users enter the same URL, they can get the same shortened URL, which is not acceptable. Same URL from different users, should result differently. 
+- If multiple users enter the same URL, they can get the same shortened URL, which is not acceptable. Same URL from different users, should result differently.
+
+##### Example Workflow
+1. User submits a request to generate short url for the long url: https://www.example.com/some/very/long/url/that/needs/to/be/shortened
+2. Generate an MD5 hash of the long URL. MD5 produces a 128-bit hash, typically a 32-character hexadecimal string: 1b3aabf5266b0f178f52e45f4bb430eb
+3. Instead of encoding the entire 128-bit hash, we typically use a portion of the hash (e.g., the first few bytes) to create a more manageable short URL.
+  - First 6 bytes of the hash: 1b3aabf5266b
+- Convert these bytes to decimal: 1b3aabf5266b (hexadecimal) > 47770830013755 (decimal)
+- Encode the result into a Base62 encoded string: DZFbb43
 
 #### Key Generation Service
 We can have a standalone Key Generation Service (KGS) that generates random seven-letter strings beforehand and stores them in a database (let’s call it key-DB). Whenever we want to shorten a URL, we will take one of the already-generated keys and use it. This approach will make things quite simple and fast. Not only are we not encoding the URL, but we won’t have to worry about duplications or collisions. KGS will make sure all the keys inserted into key-DB are unique
@@ -370,7 +378,8 @@ If we chose to actively search for expired links to remove them, it would put a 
 - After removing an expired link, we can put the key back in the key-DB to be reused.
 
 ## Architecture
-![](./resources/architecture.png)
+![](../../../../../resources/System_Design/Examples/Easy/ShortenURL/resources/architecture.png)
+![](../../../../../resources/System_Design/Examples/Easy/ShortenURL/resources/architecture2.png)
 
 ## FAQs
 - What are the key components of a URL shortener service?
@@ -406,3 +415,4 @@ Generating unique short codes is a core function of a URL shortener. Several met
 ## Resources
 - [System Design : Scalable URL shortener service like TinyURL](https://medium.com/%40sandeep4.verma/system-design-scalable-url-shortener-service-like-tinyurl-106f30f23a82)
 - [How to Design a URL Shortener Service (System Design Interview Guide)](https://www.designgurus.io/blog/url-shortening)
+- [Design a URL Shortener](https://blog.algomaster.io/p/design-a-url-shortener)
